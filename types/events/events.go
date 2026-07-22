@@ -244,6 +244,13 @@ type Disconnected struct{}
 // HistorySync is emitted when the phone has sent a blob of historical messages.
 type HistorySync struct {
 	Data *waHistorySync.HistorySync
+
+	// OriginalMessageID and PeerDataRequestSessionID correlate an on-demand history sync back to the
+	// [Client.BuildHistorySyncRequest] that triggered it, matching the message ID returned by the
+	// [Client.SendMessage]/[Client.SendPeerMessage] that sent the request. Both are empty for
+	// unsolicited syncs (bootstrap, recent, push-name, etc.). Copied from the HistorySyncNotification.
+	OriginalMessageID        string
+	PeerDataRequestSessionID string
 }
 
 type DecryptFailMode string
