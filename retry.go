@@ -466,6 +466,21 @@ func (cli *Client) clearDelayedMessageRequests() {
 }
 
 // sendRetryReceipt sends a retry receipt for an incoming message.
+// shouldMarkPeerRetry reports whether a retry receipt for this message must carry
+// `category="peer"`. Without that marker the sender acks the receipt and never redelivers, so a
+// peer payload that failed to decrypt — the one carrying HISTORY_SYNC_NOTIFICATION, among
+// others — is lost, and no session with the own device is ever established.
+//
+// The marker arrives on the wire as the message's `category` attribute
+// (`<message category="peer" type="text">`), which the parser stores in MessageInfo.Category.
+// This used to read MessageInfo.Type and compare it to "peer_msg" — a string nothing in this
+// repository ever assigns, only compares (here and in receipt.go), so the check never fired.
+// The old spelling is kept as an alternative rather than deleted: it costs one comparison and
+// covers a server that still sends the pre-`category` shape.
+func shouldMarkPeerRetry(info *types.MessageInfo) bool {
+	return (info.Category == "peer" || info.Type == "peer_msg") && info.IsFromMe
+}
+
 func (cli *Client) sendRetryReceipt(ctx context.Context, node *waBinary.Node, info *types.MessageInfo, forceIncludeIdentity bool) {
 	id, _ := node.Attrs["id"].(string)
 	children := node.GetChildren()
@@ -499,7 +514,7 @@ func (cli *Client) sendRetryReceipt(ctx context.Context, node *waBinary.Node, in
 	binary.BigEndian.PutUint32(registrationIDBytes[:], cli.Store.RegistrationID)
 	attrs := buildBaseReceipt(info.ID, node)
 	attrs["type"] = "retry"
-	if info.Type == "peer_msg" && info.IsFromMe {
+	if shouldMarkPeerRetry(info) {
 		attrs["category"] = "peer"
 	}
 	payload := waBinary.Node{
