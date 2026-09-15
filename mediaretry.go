@@ -138,7 +138,7 @@ func DecryptMediaRetryNotification(evt *events.MediaRetry, mediaKey []byte) (*wa
 
 func parseMediaRetryNotification(node *waBinary.Node) (*events.MediaRetry, error) {
 	ag := node.AttrGetter()
-	var evt events.MediaRetry
+	evt := events.MediaRetry{Node: node}
 	evt.Timestamp = ag.UnixTime("t")
 	evt.MessageID = types.MessageID(ag.String("id"))
 	if !ag.OK() {

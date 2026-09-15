@@ -598,6 +598,11 @@ type MediaRetry struct {
 	ChatID    types.JID       // The chat ID where the message was sent.
 	SenderID  types.JID       // The user who sent the message. Only present in groups.
 	FromMe    bool            // Whether the message was sent by the current user or someone else.
+
+	// Node is the <notification> exactly as it arrived. The fields above are the ones this library
+	// parses; anything else the server sent — attributes, children, a differently shaped payload —
+	// is only visible here.
+	Node *waBinary.Node
 }
 
 type BlocklistAction string
