@@ -17,6 +17,7 @@ import (
 )
 
 func (cli *Client) handleStreamError(ctx context.Context, node *waBinary.Node) {
+	cli.emitConnectionFailureDetails(node, false)
 	cli.isLoggedIn.Store(false)
 	cli.clearResponseWaiters(node)
 	code, _ := node.Attrs["code"].(string)
@@ -38,6 +39,7 @@ func (cli *Client) handleStreamError(ctx context.Context, node *waBinary.Node) {
 			}
 		}()
 	case code == "401" && conflictType == "device_removed":
+		cli.cancelCanonicalAuth()
 		cli.expectDisconnect()
 		cli.Log.Infof("Got device removed stream error, sending LoggedOut event and deleting session")
 		go cli.dispatchEvent(&events.LoggedOut{OnConnect: false, Reason: events.ConnectFailureLoggedOut})
@@ -46,6 +48,7 @@ func (cli *Client) handleStreamError(ctx context.Context, node *waBinary.Node) {
 			cli.Log.Warnf("Failed to delete store after device_removed error: %v", err)
 		}
 	case conflictType == "replaced":
+		cli.cancelCanonicalAuth()
 		cli.expectDisconnect()
 		cli.Log.Infof("Got replaced stream error, sending StreamReplaced event")
 		go cli.dispatchEvent(&events.StreamReplaced{})
@@ -100,6 +103,7 @@ func (cli *Client) handleIB(ctx context.Context, node *waBinary.Node) {
 }
 
 func (cli *Client) handleConnectFailure(ctx context.Context, node *waBinary.Node) {
+	cli.emitConnectionFailureDetails(node, true)
 	ag := node.AttrGetter()
 	reason := events.ConnectFailureReason(ag.Int("reason"))
 	message := ag.OptionalString("message")
@@ -124,6 +128,7 @@ func (cli *Client) handleConnectFailure(ctx context.Context, node *waBinary.Node
 		)
 	}
 	if reason.IsLoggedOut() {
+		cli.cancelCanonicalAuth()
 		cli.Log.Infof("Got %s connect failure, sending LoggedOut event and deleting session", reason)
 		go cli.dispatchEvent(&events.LoggedOut{OnConnect: true, Reason: reason})
 		err := cli.Store.Delete(ctx)

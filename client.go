@@ -89,6 +89,9 @@ type Client struct {
 
 	DisableLoginAutoReconnect bool
 
+	CanonicalAuth *CanonicalAuthConfig
+	canonicalAuth canonicalAuthState
+
 	sendActiveReceipts atomic.Uint32
 
 	// EmitAppStateEventsOnFullSync can be set to true if you want to get app state events emitted
@@ -582,7 +585,8 @@ func (cli *Client) unlockedConnect(ctx context.Context) error {
 	closeWait := make(chan struct{})
 	cli.handlerQueueWait = closeWait
 	go cli.keepAliveLoop(ctx, fs.Context())
-	go cli.handlerQueueLoop(ctx, fs.Context(), queue, closeWait)
+	// Each queue belongs to one socket; retain its authentication generation while it drains.
+	go cli.handlerQueueLoop(cli.canonicalAuthContext(ctx), fs.Context(), queue, closeWait)
 	return nil
 }
 
@@ -594,8 +598,15 @@ func (cli *Client) IsLoggedIn() bool {
 func (cli *Client) onDisconnect(ctx context.Context, ns *socket.NoiseSocket, remote bool) {
 	ns.Stop(false, false)
 	cli.socketLock.Lock()
-	defer cli.socketLock.Unlock()
+	var cancelled *canonicalAuthJob
+	defer func() {
+		cli.socketLock.Unlock()
+		if cancelled != nil {
+			cli.canonicalAuthDiagnostic(cancelled, "decision", "cancelled", 0, 0)
+		}
+	}()
 	if cli.socket == ns {
+		cancelled = cli.resetCanonicalAuth()
 		cli.socket = nil
 		cli.clearResponseWaiters(xmlStreamEndNode)
 		if !cli.isExpectedDisconnect() && (cli.forceAutoReconnect.Swap(false) || remote) {
@@ -683,9 +694,13 @@ func (cli *Client) Disconnect() {
 		return
 	}
 	cli.socketLock.Lock()
+	pending := cli.resetCanonicalAuth()
 	cli.expectDisconnect()
 	cli.unlockedDisconnect()
 	cli.socketLock.Unlock()
+	if pending != nil {
+		cli.canonicalAuthDiagnostic(pending, "decision", "cancelled", 0, 0)
+	}
 	cli.clearDelayedMessageRequests()
 }
 
