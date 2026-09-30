@@ -46,6 +46,11 @@ type EventHandler func(evt any)
 type EventHandlerWithSuccessStatus func(evt any) bool
 type nodeHandler func(ctx context.Context, node *waBinary.Node)
 
+type queuedNode struct {
+	node                *waBinary.Node
+	canonicalGeneration any
+}
+
 var nextHandlerID uint32
 
 type wrappedEventHandler struct {
@@ -87,6 +92,9 @@ type Client struct {
 
 	DisableLoginAutoReconnect bool
 
+	CanonicalAuth *CanonicalAuthConfig
+	canonicalAuth canonicalAuthState
+
 	sendActiveReceipts atomic.Uint32
 
 	// EmitAppStateEventsOnFullSync can be set to true if you want to get app state events emitted
@@ -117,7 +125,7 @@ type Client struct {
 	responseWaitersLock sync.Mutex
 
 	nodeHandlers      map[string]nodeHandler
-	handlerQueue      chan *waBinary.Node
+	handlerQueue      chan queuedNode
 	eventHandlers     []wrappedEventHandler
 	eventHandlersLock sync.RWMutex
 
@@ -262,7 +270,7 @@ func NewClient(deviceStore *store.Device, log waLog.Logger) *Client {
 		responseWaiters:    make(map[string]chan<- *waBinary.Node),
 		eventHandlers:      make([]wrappedEventHandler, 0, 1),
 		messageRetries:     make(map[string]int),
-		handlerQueue:       make(chan *waBinary.Node, handlerQueueSize),
+		handlerQueue:       make(chan queuedNode, handlerQueueSize),
 		appStateProc:       appstate.NewProcessor(deviceStore, log.Sub("AppState")),
 		socketWait:         make(chan struct{}),
 		expectedDisconnect: exsync.NewEvent(),
@@ -561,7 +569,7 @@ func (cli *Client) unlockedConnect(ctx context.Context) error {
 	if err := fs.Connect(ctx); err != nil {
 		fs.Close(0)
 		return err
-	} else if err = cli.doHandshake(ctx, fs, *keys.NewKeyPair()); err != nil {
+	} else if err = cli.doHandshake(cli.canonicalAuthContext(ctx), fs, *keys.NewKeyPair()); err != nil {
 		fs.Close(0)
 		return fmt.Errorf("noise handshake failed: %w", err)
 	}
@@ -578,8 +586,15 @@ func (cli *Client) IsLoggedIn() bool {
 func (cli *Client) onDisconnect(ctx context.Context, ns *socket.NoiseSocket, remote bool) {
 	ns.Stop(false, false)
 	cli.socketLock.Lock()
-	defer cli.socketLock.Unlock()
+	var cancelled *canonicalAuthJob
+	defer func() {
+		cli.socketLock.Unlock()
+		if cancelled != nil {
+			cli.canonicalAuthDiagnostic(cancelled, "decision", "cancelled", 0, 0)
+		}
+	}()
 	if cli.socket == ns {
+		cancelled = cli.resetCanonicalAuth()
 		cli.socket = nil
 		cli.clearResponseWaiters(xmlStreamEndNode)
 		if !cli.isExpectedDisconnect() && (cli.forceAutoReconnect.Swap(false) || remote) {
@@ -666,9 +681,13 @@ func (cli *Client) Disconnect() {
 		return
 	}
 	cli.socketLock.Lock()
+	pending := cli.resetCanonicalAuth()
 	cli.expectDisconnect()
 	cli.unlockedDisconnect()
 	cli.socketLock.Unlock()
+	if pending != nil {
+		cli.canonicalAuthDiagnostic(pending, "decision", "cancelled", 0, 0)
+	}
 	cli.clearDelayedMessageRequests()
 }
 
@@ -843,14 +862,15 @@ func (cli *Client) handleFrame(ctx context.Context, data []byte) {
 	} else if cli.receiveResponse(ctx, node) {
 		// handled
 	} else if _, ok := cli.nodeHandlers[node.Tag]; ok {
+		queued := queuedNode{node: node, canonicalGeneration: ctx.Value(canonicalGenerationKey{})}
 		select {
-		case cli.handlerQueue <- node:
+		case cli.handlerQueue <- queued:
 		case <-ctx.Done():
 		default:
 			cli.Log.Warnf("Handler queue is full, message ordering is no longer guaranteed")
 			go func() {
 				select {
-				case cli.handlerQueue <- node:
+				case cli.handlerQueue <- queued:
 				case <-ctx.Done():
 				}
 			}()
@@ -867,11 +887,17 @@ func (cli *Client) handlerQueueLoop(evtCtx, connCtx context.Context) {
 Loop:
 	for {
 		select {
-		case node := <-cli.handlerQueue:
+		case queued := <-cli.handlerQueue:
+			node := queued.node
+			generation := queued.canonicalGeneration
+			if generation == nil {
+				generation = false
+			}
+			nodeCtx := context.WithValue(evtCtx, canonicalGenerationKey{}, generation)
 			doneChan := make(chan struct{})
 			start := time.Now()
 			go func() {
-				cli.nodeHandlers[node.Tag](evtCtx, node)
+				cli.nodeHandlers[node.Tag](nodeCtx, node)
 				duration := time.Since(start)
 				close(doneChan)
 				if duration > 5*time.Second {

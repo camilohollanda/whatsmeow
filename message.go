@@ -891,6 +891,8 @@ func (cli *Client) handleProtocolMessage(ctx context.Context, info *types.Messag
 	if info.Sender.Device == 0 {
 		peerResp := protoMsg.GetPeerDataOperationRequestResponseMessage()
 		switch peerResp.GetPeerDataOperationRequestType() {
+		case waE2E.PeerDataOperationRequestType_COMPANION_CANONICAL_USER_NONCE_FETCH:
+			cli.handleCanonicalAuth(ctx, info, peerResp)
 		case waE2E.PeerDataOperationRequestType_PLACEHOLDER_MESSAGE_RESEND:
 			ok = cli.handlePlaceholderResendResponse(peerResp) && ok
 		case waE2E.PeerDataOperationRequestType_COMPANION_SYNCD_SNAPSHOT_FATAL_RECOVERY:
