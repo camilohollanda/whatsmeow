@@ -275,6 +275,30 @@ func TestCanonicalAuthObservesWithoutNetworkingByDefault(t *testing.T) {
 	}
 }
 
+func TestCanonicalAuthRechecksEligibilityForEachNonce(t *testing.T) {
+	var eligible atomic.Bool
+	var posts atomic.Int32
+	cli, observed := canonicalTestClient(t, canonicalSuccessHandler(t, &posts))
+	cli.CanonicalAuth.ShouldAuthenticate = eligible.Load
+	deliverCanonical(cli, "unknown-platform", "synthetic-nonce", false)
+	awaitCanonical(t, observed, "unknown-platform", "ineligible")
+	if posts.Load() != 0 {
+		t.Fatal("ineligible client performed authentication")
+	}
+	eligible.Store(true)
+	deliverCanonical(cli, "business-platform", "synthetic-nonce", false)
+	awaitCanonical(t, observed, "business-platform", "validated")
+	if posts.Load() != 1 {
+		t.Fatalf("eligible client performed %d exchanges", posts.Load())
+	}
+	eligible.Store(false)
+	deliverCanonical(cli, "personal-platform", "next-nonce", true)
+	awaitCanonical(t, observed, "personal-platform", "ineligible")
+	if posts.Load() != 1 {
+		t.Fatal("ineligible forced refresh performed authentication")
+	}
+}
+
 func TestCanonicalAuthRefreshesValidatedSessionOnlyWhenForced(t *testing.T) {
 	var posts atomic.Int32
 	cli, observed := canonicalTestClient(t, canonicalSuccessHandler(t, &posts))
