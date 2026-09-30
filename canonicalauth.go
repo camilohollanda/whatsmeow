@@ -23,6 +23,9 @@ import (
 // responses. Configure it before connecting. Nil leaves observation enabled but
 // makes no HTTP requests. Credentials are held only for this Client's lifetime.
 type CanonicalAuthConfig struct {
+	// ShouldAuthenticate optionally gates each nonce before HTTP work is queued.
+	// It must be safe for concurrent calls and must not block. Nil allows all clients.
+	ShouldAuthenticate func() bool
 	// HTTPClient supplies the transport. Its cookies and redirect policy are not
 	// shared: the experiment uses a private jar and never follows redirects.
 	HTTPClient *http.Client
@@ -81,6 +84,10 @@ func (cli *Client) handleCanonicalAuth(ctx context.Context, info *types.MessageI
 	cli.dispatchEvent(&observed)
 	if cli.CanonicalAuth == nil {
 		cli.canonicalAuthDiagnostic(job, "decision", "disabled", 0, 0)
+		return
+	}
+	if cli.CanonicalAuth.ShouldAuthenticate != nil && !cli.CanonicalAuth.ShouldAuthenticate() {
+		cli.canonicalAuthDiagnostic(job, "decision", "ineligible", 0, 0)
 		return
 	}
 	if !fromConnection {
