@@ -102,7 +102,7 @@ func TestCanonicalAuthAcceptsRepeatedNonceAfterDisconnect(t *testing.T) {
 	if cli.canonicalAuth.pending == nil || cli.canonicalAuth.pending.generation != cli.canonicalAuth.generation {
 		t.Fatal("in-flight cancelled attempt swallowed the new session's nonce")
 	}
-	cli.cancelCanonicalAuth()
+	cli.cancelCanonicalAuth(cli.canonicalAuthContext(context.Background()))
 	awaitCanonical(t, observed, "reconnect", "cancelled")
 }
 
@@ -128,8 +128,10 @@ func TestCanonicalAuthOldQueuedFrameCannotAuthenticateNewConnection(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	cli.handleFrame(cli.canonicalAuthContext(context.Background()), frame)
-	if len(cli.handlerQueue) != 1 {
+	oldContext := cli.canonicalAuthContext(context.Background())
+	queue := make(chan *waBinary.Node, handlerQueueSize)
+	cli.makeFrameHandler(queue)(oldContext, frame)
+	if len(queue) != 1 {
 		t.Fatal("frame did not reach the handler queue")
 	}
 	cli.Disconnect()
@@ -137,7 +139,7 @@ func TestCanonicalAuthOldQueuedFrameCannotAuthenticateNewConnection(t *testing.T
 	defer cancel()
 	done := make(chan struct{})
 	go func() {
-		cli.handlerQueueLoop(cli.canonicalAuthContext(context.Background()), ctx)
+		cli.handlerQueueLoop(oldContext, ctx, queue, make(chan struct{}))
 		close(done)
 	}()
 	awaitCanonical(t, observed, "queued", "cancelled")
@@ -172,7 +174,7 @@ func TestCanonicalAuthRemoteDisconnectCancelsActiveAndPendingWork(t *testing.T) 
 	frame := socket.NewFrameSocket(waLog.Noop, nil)
 	handshake := socket.NewNoiseHandshake()
 	handshake.Start(socket.NoiseStartPattern, nil)
-	ns, err := handshake.Finish(context.Background(), frame, nil, nil)
+	ns, err := handshake.Finish(frame, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

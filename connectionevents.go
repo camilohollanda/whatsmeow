@@ -39,7 +39,7 @@ func (cli *Client) handleStreamError(ctx context.Context, node *waBinary.Node) {
 			}
 		}()
 	case code == "401" && conflictType == "device_removed":
-		cli.cancelCanonicalAuth()
+		cli.cancelCanonicalAuth(ctx)
 		cli.expectDisconnect()
 		cli.Log.Infof("Got device removed stream error, sending LoggedOut event and deleting session")
 		go cli.dispatchEvent(&events.LoggedOut{OnConnect: false, Reason: events.ConnectFailureLoggedOut})
@@ -48,7 +48,7 @@ func (cli *Client) handleStreamError(ctx context.Context, node *waBinary.Node) {
 			cli.Log.Warnf("Failed to delete store after device_removed error: %v", err)
 		}
 	case conflictType == "replaced":
-		cli.cancelCanonicalAuth()
+		cli.cancelCanonicalAuth(ctx)
 		cli.expectDisconnect()
 		cli.Log.Infof("Got replaced stream error, sending StreamReplaced event")
 		go cli.dispatchEvent(&events.StreamReplaced{})
@@ -128,7 +128,7 @@ func (cli *Client) handleConnectFailure(ctx context.Context, node *waBinary.Node
 		)
 	}
 	if reason.IsLoggedOut() {
-		cli.cancelCanonicalAuth()
+		cli.cancelCanonicalAuth(ctx)
 		cli.Log.Infof("Got %s connect failure, sending LoggedOut event and deleting session", reason)
 		go cli.dispatchEvent(&events.LoggedOut{OnConnect: true, Reason: reason})
 		err := cli.Store.Delete(ctx)

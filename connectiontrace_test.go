@@ -268,3 +268,69 @@ func TestConnectionTraceDisconnectDoesNotReenterEventHandler(t *testing.T) {
 		t.Fatal("asynchronous disconnect diagnostic was lost")
 	}
 }
+
+func TestConnectionTraceCancelledQueueKeepsOriginWhileDraining(t *testing.T) {
+	cli := NewClient(&store.Device{}, nil)
+	first := cli.beginConnectionTrace()
+	oldContext := cli.canonicalAuthContext(context.Background())
+	queue := make(chan *waBinary.Node, 2)
+	queue <- &waBinary.Node{Tag: "message"}
+	queue <- &waBinary.Node{Tag: "stream:error", Attrs: waBinary.Attrs{"code": "503"}}
+	var messages atomic.Int32
+	cli.nodeHandlers["message"] = func(context.Context, *waBinary.Node) { messages.Add(1) }
+	failures := make(chan events.ConnectionFailureDetails, 1)
+	cli.AddEventHandler(func(event any) {
+		if detail, ok := event.(*events.ConnectionFailureDetails); ok {
+			failures <- *detail
+		}
+	})
+	connCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	second := cli.beginConnectionTrace()
+	closed := make(chan struct{})
+	cli.handlerQueueLoop(oldContext, connCtx, queue, closed)
+	select {
+	case <-closed:
+	default:
+		t.Fatal("cancelled connection did not release its queue")
+	}
+	if messages.Load() != 0 {
+		t.Fatal("cancelled queue processed a message")
+	}
+	select {
+	case failure := <-failures:
+		if failure.ConnectionID != first || failure.AuthSummaryAvailable {
+			t.Fatalf("drained failure inherited new connection: %+v", failure)
+		}
+	default:
+		t.Fatal("stream failure was not drained")
+	}
+	if cli.ConnectionDiagnosticSnapshot().ConnectionID != second {
+		t.Fatal("draining replaced current connection identity")
+	}
+}
+
+func TestConnectionTraceStaleTerminalErrorCannotCancelNewAuth(t *testing.T) {
+	cli := NewClient(&store.Device{}, nil)
+	cli.beginConnectionTrace()
+	oldContext := cli.canonicalAuthContext(context.Background())
+	cli.beginConnectionTrace()
+	currentContext := cli.canonicalAuthContext(context.Background())
+	current := currentContext.Value(canonicalGenerationKey{}).(canonicalConnection)
+	replaced := &waBinary.Node{Tag: "stream:error", Content: []waBinary.Node{{Tag: "conflict", Attrs: waBinary.Attrs{"type": "replaced"}}}}
+	cli.canonicalAuth.authenticated = true
+	cli.handleStreamError(oldContext, replaced)
+	cli.canonicalAuth.mu.Lock()
+	generation, authenticated := cli.canonicalAuth.generation, cli.canonicalAuth.authenticated
+	cli.canonicalAuth.mu.Unlock()
+	if generation != current.generation || !authenticated {
+		t.Fatal("old terminal error invalidated the new connection's authentication")
+	}
+	cli.handleStreamError(currentContext, replaced)
+	cli.canonicalAuth.mu.Lock()
+	generation, authenticated = cli.canonicalAuth.generation, cli.canonicalAuth.authenticated
+	cli.canonicalAuth.mu.Unlock()
+	if generation == current.generation || authenticated {
+		t.Fatal("current terminal error did not invalidate authentication")
+	}
+}

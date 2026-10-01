@@ -217,8 +217,20 @@ func (cli *Client) runCanonicalAuthJob(job *canonicalAuthJob) (string, string, i
 	return stage, outcome, status
 }
 
-func (cli *Client) cancelCanonicalAuth() {
-	if pending := cli.resetCanonicalAuth(); pending != nil {
+func (cli *Client) cancelCanonicalAuth(ctx context.Context) {
+	connection, ok := ctx.Value(canonicalGenerationKey{}).(canonicalConnection)
+	if !ok {
+		return
+	}
+	state := &cli.canonicalAuth
+	state.mu.Lock()
+	if connection.generation != state.generation {
+		state.mu.Unlock()
+		return
+	}
+	pending := state.resetLocked()
+	state.mu.Unlock()
+	if pending != nil {
 		cli.canonicalAuthDiagnostic(pending, "decision", "cancelled", 0, 0)
 	}
 }
