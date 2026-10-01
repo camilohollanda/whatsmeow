@@ -8,6 +8,9 @@ package events
 // consumed internally. It supplements, and never replaces, lifecycle events.
 // Text fields are bounded to 2048 bytes; raw stanzas are deliberately excluded.
 type ConnectionFailureDetails struct {
+	AuthSummaryAvailable bool
+	ConnectionID         string
+	Auth                 CanonicalAuthSummary
 	OnConnect            bool
 	Code                 string
 	Message              string

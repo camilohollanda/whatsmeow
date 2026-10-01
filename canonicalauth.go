@@ -35,6 +35,9 @@ type CanonicalAuthConfig struct {
 }
 
 type canonicalAuthState struct {
+	traceEnded    bool
+	connectionID  string
+	summary       events.CanonicalAuthSummary
 	mu            sync.Mutex
 	active        *canonicalAuthJob
 	pending       *canonicalAuthJob
@@ -47,6 +50,7 @@ type canonicalAuthState struct {
 }
 
 type canonicalAuthJob struct {
+	finished   bool
 	diagnostic events.CanonicalAuth
 	nonce      string
 	userID     string
@@ -58,11 +62,16 @@ type canonicalAuthJob struct {
 
 type canonicalGenerationKey struct{}
 
+type canonicalConnection struct {
+	generation uint64
+	id         string
+}
+
 func (cli *Client) canonicalAuthContext(ctx context.Context) context.Context {
 	cli.canonicalAuth.mu.Lock()
-	generation := cli.canonicalAuth.generation
+	connection := canonicalConnection{cli.canonicalAuth.generation, cli.canonicalAuth.connectionID}
 	cli.canonicalAuth.mu.Unlock()
-	return context.WithValue(ctx, canonicalGenerationKey{}, generation)
+	return context.WithValue(ctx, canonicalGenerationKey{}, connection)
 }
 
 func (cli *Client) handleCanonicalAuth(ctx context.Context, info *types.MessageInfo, response *waE2E.PeerDataOperationRequestResponseMessage) {
@@ -70,18 +79,19 @@ func (cli *Client) handleCanonicalAuth(ctx context.Context, info *types.MessageI
 		return
 	}
 	state := &cli.canonicalAuth
-	generation, fromConnection := ctx.Value(canonicalGenerationKey{}).(uint64)
+	connection, fromConnection := ctx.Value(canonicalGenerationKey{}).(canonicalConnection)
+	generation := connection.generation
 	var result *waE2E.PeerDataOperationRequestResponseMessage_PeerDataOperationResult_CompanionCanonicalUserNonceFetchResponse
 	if len(response.GetPeerDataOperationResult()) > 0 {
 		result = response.GetPeerDataOperationResult()[0].GetCompanionCanonicalUserNonceFetchRequestResponse()
 	}
 	job := &canonicalAuthJob{diagnostic: events.CanonicalAuth{
-		MessageID: info.ID, ForceRefresh: result.GetForceRefresh(),
+		ConnectionID: connection.id, MessageID: info.ID, ForceRefresh: result.GetForceRefresh(),
 		HasNonce: result.GetNonce() != "", HasUserID: result.GetWaFbid() != "",
 		Stage: "received", Outcome: "observed",
 	}, nonce: result.GetNonce(), userID: result.GetWaFbid()}
 	observed := job.diagnostic
-	cli.dispatchEvent(&observed)
+	cli.emitCanonicalDiagnostic(observed)
 	if cli.CanonicalAuth == nil {
 		cli.canonicalAuthDiagnostic(job, "decision", "disabled", 0, 0)
 		return
@@ -143,14 +153,18 @@ func (cli *Client) canonicalAuthDiagnostic(job *canonicalAuthJob, stage, outcome
 	diagnostic := job.diagnostic
 	diagnostic.Stage, diagnostic.Outcome = stage, outcome
 	diagnostic.HTTPStatus, diagnostic.Duration = status, duration
-	cli.dispatchEvent(&diagnostic)
+	cli.emitCanonicalDiagnostic(diagnostic)
 }
 
 func (cli *Client) runCanonicalAuth(job *canonicalAuthJob) {
 	state := &cli.canonicalAuth
 	for job != nil {
 		started := time.Now()
+		cli.canonicalAuthDiagnostic(job, "started", "in_progress", 0, 0)
 		stage, outcome, status := cli.runCanonicalAuthJob(job)
+		state.mu.Lock()
+		job.finished = true
+		state.mu.Unlock()
 		cli.canonicalAuthDiagnostic(job, stage, outcome, status, time.Since(started))
 		state.mu.Lock()
 		job, state.pending = state.pending, nil
@@ -212,6 +226,11 @@ func (cli *Client) cancelCanonicalAuth() {
 func (cli *Client) resetCanonicalAuth() *canonicalAuthJob {
 	state := &cli.canonicalAuth
 	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.resetLocked()
+}
+
+func (state *canonicalAuthState) resetLocked() *canonicalAuthJob {
 	state.generation++
 	if state.cancel != nil {
 		state.cancel()
@@ -220,6 +239,5 @@ func (cli *Client) resetCanonicalAuth() *canonicalAuthJob {
 	pending := state.pending
 	state.pending, state.http = nil, nil
 	state.authenticated, state.userID = false, ""
-	state.mu.Unlock()
 	return pending
 }

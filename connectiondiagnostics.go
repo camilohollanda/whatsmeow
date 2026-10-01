@@ -5,11 +5,13 @@
 package whatsmeow
 
 import (
+	"context"
+
 	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/types/events"
 )
 
-func (cli *Client) emitConnectionFailureDetails(node *waBinary.Node, onConnect bool) {
+func (cli *Client) emitConnectionFailureDetails(ctx context.Context, node *waBinary.Node, onConnect bool) {
 	attrs := node.AttrGetter()
 	codeKey := "code"
 	if onConnect {
@@ -27,7 +29,9 @@ func (cli *Client) emitConnectionFailureDetails(node *waBinary.Node, onConnect b
 	if len(conflictType) > 2048 {
 		conflictType = conflictType[:2048]
 	}
+	snapshot := cli.connectionDiagnosticForContext(ctx)
 	cli.dispatchEvent(&events.ConnectionFailureDetails{
+		ConnectionID: snapshot.ConnectionID, Auth: snapshot.Auth, AuthSummaryAvailable: snapshot.AuthSummaryAvailable,
 		OnConnect: onConnect, Code: text(codeKey), Message: text("message"), Conflict: conflictType,
 		LogoutMessageHeader: text("logout_message_header"), LogoutMessageSubtext: text("logout_message_subtext"),
 	})
