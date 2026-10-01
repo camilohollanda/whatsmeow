@@ -13,12 +13,15 @@ import (
 // CanonicalAuth describes a companion nonce observation or an experimental Web
 // authentication attempt. It never includes nonces, user IDs, cookies or HTTP bodies.
 type CanonicalAuth struct {
-	MessageID    types.MessageID
-	ForceRefresh bool
-	HasNonce     bool
-	HasUserID    bool
-	Stage        string
-	Outcome      string
-	HTTPStatus   int
-	Duration     time.Duration
+	ConnectionID  string
+	MessageID     types.MessageID
+	ForceRefresh  bool
+	HasNonce      bool
+	HasUserID     bool
+	Stage         string
+	Outcome       string
+	HTTPStatus    int
+	ErrorCategory string
+	ErrorCodes    []int
+	Duration      time.Duration
 }

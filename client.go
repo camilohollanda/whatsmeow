@@ -538,7 +538,7 @@ func (cli *Client) connect(ctx context.Context) error {
 	return cli.unlockedConnect(ctx)
 }
 
-func (cli *Client) unlockedConnect(ctx context.Context) error {
+func (cli *Client) unlockedConnect(ctx context.Context) (connectErr error) {
 	if cli.Store.Deleted {
 		return store.ErrDeviceDeleted
 	}
@@ -550,6 +550,17 @@ func (cli *Client) unlockedConnect(ctx context.Context) error {
 		}
 	}
 
+	cli.beginConnectionTrace()
+	connecting := cli.connectionTrace("connecting", "connector", false)
+	go cli.dispatchEvent(&connecting)
+	defer func() {
+		if connectErr != nil {
+			failed := cli.endConnectionTrace("connect_failed", "transport", false)
+			if failed != nil {
+				go cli.dispatchEvent(failed)
+			}
+		}
+	}()
 	cli.resetExpectedDisconnect()
 	client := cli.websocketHTTP
 	if cli.Store.ID == nil {
@@ -587,13 +598,22 @@ func (cli *Client) onDisconnect(ctx context.Context, ns *socket.NoiseSocket, rem
 	ns.Stop(false, false)
 	cli.socketLock.Lock()
 	var cancelled *canonicalAuthJob
+	var diagnostic *events.ConnectionDiagnostic
 	defer func() {
 		cli.socketLock.Unlock()
+		if diagnostic != nil {
+			cli.dispatchEvent(diagnostic)
+		}
 		if cancelled != nil {
 			cli.canonicalAuthDiagnostic(cancelled, "decision", "cancelled", 0, 0)
 		}
 	}()
 	if cli.socket == ns {
+		origin := "local"
+		if remote {
+			origin = "remote_or_network"
+		}
+		diagnostic = cli.endConnectionTrace("disconnected", origin, cli.isExpectedDisconnect())
 		cancelled = cli.resetCanonicalAuth()
 		cli.socket = nil
 		cli.clearResponseWaiters(xmlStreamEndNode)
@@ -674,19 +694,28 @@ func (cli *Client) IsConnected() bool {
 
 // Disconnect disconnects from the WhatsApp web websocket.
 //
-// This will not emit any events, the Disconnected event is only used when the
-// connection is closed by the server or a network error.
+// This emits ConnectionDiagnostic, but not Disconnected: the latter is reserved
+// for server closures and network errors.
 func (cli *Client) Disconnect() {
 	if cli == nil {
 		return
 	}
 	cli.socketLock.Lock()
+	diagnostic := cli.endConnectionTrace("disconnected", "local", true)
 	pending := cli.resetCanonicalAuth()
 	cli.expectDisconnect()
 	cli.unlockedDisconnect()
 	cli.socketLock.Unlock()
-	if pending != nil {
-		cli.canonicalAuthDiagnostic(pending, "decision", "cancelled", 0, 0)
+	if diagnostic != nil || pending != nil {
+		// Disconnect may be called by an event handler that holds its own lock.
+		go func() {
+			if diagnostic != nil {
+				cli.dispatchEvent(diagnostic)
+			}
+			if pending != nil {
+				cli.canonicalAuthDiagnostic(pending, "decision", "cancelled", 0, 0)
+			}
+		}()
 	}
 	cli.clearDelayedMessageRequests()
 }

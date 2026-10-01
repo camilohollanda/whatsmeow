@@ -17,7 +17,7 @@ import (
 )
 
 func (cli *Client) handleStreamError(ctx context.Context, node *waBinary.Node) {
-	cli.emitConnectionFailureDetails(node, false)
+	cli.emitConnectionFailureDetails(ctx, node, false)
 	cli.isLoggedIn.Store(false)
 	cli.clearResponseWaiters(node)
 	code, _ := node.Attrs["code"].(string)
@@ -103,7 +103,7 @@ func (cli *Client) handleIB(ctx context.Context, node *waBinary.Node) {
 }
 
 func (cli *Client) handleConnectFailure(ctx context.Context, node *waBinary.Node) {
-	cli.emitConnectionFailureDetails(node, true)
+	cli.emitConnectionFailureDetails(ctx, node, true)
 	ag := node.AttrGetter()
 	reason := events.ConnectFailureReason(ag.Int("reason"))
 	message := ag.OptionalString("message")
@@ -165,6 +165,9 @@ func (cli *Client) handleConnectSuccess(ctx context.Context, node *waBinary.Node
 		cli.Log.Warnf("Received connect success without pairing, ignoring")
 		return
 	}
+	connected := cli.connectionDiagnosticForContext(ctx)
+	connected.Event, connected.Origin = "connected", "server"
+	cli.dispatchEvent(&connected)
 	cli.Log.Infof("Successfully authenticated")
 	cli.LastSuccessfulConnect = time.Now()
 	cli.AutoReconnectErrors = 0
